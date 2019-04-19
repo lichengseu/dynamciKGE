@@ -12,19 +12,24 @@ import argparse
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
-parser = argparse.ArgumentParser(description='batch size, margin')
-parser.add_argument('-b', '--batchsize', type=int, dest='batchsize', help='batch size', required=False, default=100)
-parser.add_argument('-m', '--margin', type=float, dest='margin', help='margin', required=False, default=1.0)
-parser.add_argument('-l', '--learning_rate', type=float, dest="learning_rate", help="learning rate", required=False, default=0.01)
+parser = argparse.ArgumentParser(description='parameters')
+parser.add_argument('-b', '--batchsize', type=int, dest='batchsize', help='batch size', required=False, default=200)
+parser.add_argument('-m', '--margin', type=float, dest='margin', help='margin', required=False, default=10.0)
+parser.add_argument('-l', '--learning_rate', type=float, dest="learning_rate", help="learning rate", required=False, default=0.005)
 parser.add_argument('-d', '--dimension', type=int, dest="dimension", help="dimension", required=False, default=100)
-parser.add_argument('-n', '--norm', type=int, dest="norm", help="normalization", required=False, default=2)
+parser.add_argument('-n', '--norm', type=int, dest="norm", help="normalization", required=False, default=1)
 parser.add_argument('-e', '--extra', type=str, dest="extra", help="extra information", required=False, default="")
 args = parser.parse_args()
 
 
-def read_file(train_file_name):
+def get_total(file_name):
+    with open(file_name) as f:
+        return int(f.readline())
+
+
+def read_file(file_name):
     train_data = []  # [(h, r, t)]
-    with open(train_file_name) as f:
+    with open(file_name) as f:
         lines = f.readlines()
         for line in lines:
             li = line.split()
@@ -33,33 +38,14 @@ def read_file(train_file_name):
     return train_data
 
 
-def read_entity_total(entity_file_name):
-    with open(entity_file_name) as f:
-        entity_total = int(f.readline())
-    return entity_total
-
-
-def read_relation_total(relation_file_name):
-    with open(relation_file_name) as f:
-        relation_total = int(f.readline())
-    return relation_total
-
-
 dataset_v1 = 'YAGO3-10-part'
-inverse_relation = False  # 是否考虑逆关系，(h,r,t)衍生出(t,r+relationTotal,h)
 
-entity_total = read_entity_total(entity_file_name='./data/' + dataset_v1 + '/entity2id.txt')
-if not inverse_relation:
-    relation_total = read_relation_total(relation_file_name='./data/' + dataset_v1 + '/relation2id.txt')
-    train_list = read_file(train_file_name='./data/' + dataset_v1 + '/train2id.txt')
-    test_list = read_file(train_file_name='./data/' + dataset_v1 + '/test2id.txt')
-    valid_list = read_file(train_file_name='./data/' + dataset_v1 + '/valid2id.txt')
-else:
-    relation_total = read_relation_total(relation_file_name='./data/' + dataset_v1 + '/inverse_relation2id.txt')
-    train_list = read_file(train_file_name='./data/' + dataset_v1 + '/inverse_train2id.txt')
-    test_list = read_file(train_file_name='./data/' + dataset_v1 + '/inverse_test2id.txt')
-    valid_list = read_file(train_file_name='./data/' + dataset_v1 + '/inverse_valid2id.txt')
+entity_total = get_total(file_name='./data/' + dataset_v1 + '/entity2id.txt')
+relation_total = get_total(file_name='./data/' + dataset_v1 + '/relation2id.txt')
 
+train_list = read_file(file_name='./data/' + dataset_v1 + '/train2id.txt')
+test_list = read_file(file_name='./data/' + dataset_v1 + '/test2id.txt')
+valid_list = read_file(file_name='./data/' + dataset_v1 + '/valid2id.txt')
 
 print('entity_total: ' + str(entity_total))
 print('relation_total: ' + str(relation_total))
@@ -67,7 +53,32 @@ print('train_total: ' + str(len(train_list)))
 print('test_total: ' + str(len(test_list)))
 print('valid_total: ' + str(len(valid_list)))
 
+train_times = 2001
+validation_step = 20
+norm = args.norm
+learning_rate = args.learning_rate
+batch_size = args.batchsize
+nbatchs = math.ceil(len(train_list) / batch_size)  # 单例输入，等于训练数据的数目
+dim = args.dimension
+margin = args.margin
+extra_info = args.extra
+bern = True
+init_with_transe = True
 max_context_num_constraint = True
+transe_model_file = 'TransE2.json'
+res_dir = "./res/%s_%s_%s_%s_%s_%s/" % (str(norm), str(batch_size), str(margin),
+                                         str(dim), str(learning_rate), extra_info)
+
+print('train_times: ' + str(train_times))
+print('validation_step: ' + str(validation_step))
+print('learning_rate: ' + str(learning_rate))
+print('batch_size: ' + str(batch_size))
+print('nbatchs: ' + str(nbatchs))
+print('dim: ' + str(dim))
+print('margin: ' + str(margin))
+print('bern: ' + str(bern))
+print('init_with_transe: ' + str(init_with_transe))
+print('result directory: ' + str(res_dir))
 
 
 # 经过一条边或两条边得到的所有路径 {entity: [[path]}
@@ -107,38 +118,28 @@ def get_1or2_path_from_head(head_ent, rel, entity_adj_table_with_rel):
 
 
 def find_relation_context(h, r, t, entity_adj_table_with_rel):
-    tail_ent2paths = get_1or2_path_from_head(h, r, entity_adj_table_with_rel)  # 经过一条边或两条边得到的所有路径 {entity: [[edge]]}
+    # 经过一条边或两条边得到的所有路径 {entity: [[edge]]}
+    tail_ent2paths = get_1or2_path_from_head(h, r, entity_adj_table_with_rel)
     return tail_ent2paths.get(t, [])
 
 
 def construct_adj_table(train_list):
-    '''
-
-    :param train_list:
-    :return:
-    entity_adj_table: {entity: [e, ..., e, pading, ...]}, key size: entity total, value size: max_context_num
-    relation_adj_table: {relation: [e or pad, ..., e or pad]}, key size: relation total, value size: 2 * max_context_num
-    '''
     entity_adj_table_with_rel = dict()  # {head_entity: [(tail_entity, relation)]}
     entity_adj_table = dict()  # {head_entity: [tail_entity]}
     relation_adj_table = dict()  # {relation: [[edge]]}
 
     for train_data in train_list:
         h, r, t = train_data
-
-        if h not in entity_adj_table_with_rel:
-            entity_adj_table_with_rel[h] = [(t, r)]
+        if h not in entity_adj_table:
             entity_adj_table[h] = {t}
+            entity_adj_table_with_rel[h] = [(t, r)]
         else:
-            entity_adj_table_with_rel[h].append((t, r))
             entity_adj_table[h].add(t)
+            entity_adj_table_with_rel[h].append((t, r))
 
     for train_data in train_list:
         h, r, t = train_data
-
-        # 连接h t的一条边或两条边的路径上的所有边（关系）
         paths = find_relation_context(h, r, t, entity_adj_table_with_rel)
-
         if r not in relation_adj_table:
             relation_adj_table[r] = paths
         else:
@@ -148,25 +149,37 @@ def construct_adj_table(train_list):
         relation_adj_table[k] = set([tuple(i) for i in v])
 
     if max_context_num_constraint:
-        max_context_num = 25
+        max_context_num = 15
+        for k, v in entity_adj_table.items():
+            if len(v) > max_context_num:
+                res = list(v)
+                res = res[:max_context_num]
+                entity_adj_table[k] = set(res)
+        for k, v in relation_adj_table.items():
+            if len(v) > max_context_num:
+                res = list(v)
+                res = res[:max_context_num]
+                relation_adj_table[k] = set(res)
     else:
         max_context_num = 0
         for k, v in entity_adj_table.items():
-            max_context_num = max(max_context_num, len(entity_adj_table[k]))
+            max_context_num = max(max_context_num, len(v))
         for k, v in relation_adj_table.items():
-            max_context_num = max(max_context_num, len(set([tuple(i) for i in relation_adj_table[k]])))
+            max_context_num = max(max_context_num, len(v))
 
-    entity_DAD = torch.FloatTensor(entity_total, max_context_num + 1, max_context_num + 1).cuda()
-    relation_DAD = torch.FloatTensor(relation_total, max_context_num + 1, max_context_num + 1).cuda()
+    entity_DAD = torch.DoubleTensor(entity_total, max_context_num + 1, max_context_num + 1).cuda()
+    relation_DAD = torch.DoubleTensor(relation_total, max_context_num + 1, max_context_num + 1).cuda()
 
     for entity in range(entity_total):
-        adj_num = max_context_num
         A = torch.eye(max_context_num + 1, max_context_num + 1).cuda()
-        tmp = torch.ones(adj_num + 1).cuda()
-        A[0, :adj_num + 1] = tmp
-        A[:adj_num + 1, 0] = tmp
+        tmp = torch.ones(max_context_num + 1).cuda()
+        A[0, :max_context_num + 1] = tmp
+        A[:max_context_num + 1, 0] = tmp
+
         D = np.eye(max_context_num + 1, max_context_num + 1)
-        D[0][0] = max_context_num
+        i = list(range(max_context_num + 1))
+        D[i, i] = 2
+        D[0][0] = max_context_num + 1
 
         if entity in entity_adj_table:
             neighbours_list = list(entity_adj_table[entity])
@@ -182,19 +195,20 @@ def construct_adj_table(train_list):
 
         D = np.linalg.inv(D)
         D = torch.Tensor(D).cuda()
-        i = list(range(max_context_num + 1))
         D[i, i] = torch.sqrt(D[i, i])
+
         entity_DAD[entity] = D.mm(A).mm(D)
 
     for relation in range(relation_total):
-        adj_num = max_context_num
         A = torch.eye(max_context_num + 1, max_context_num + 1).cuda()
-        tmp = torch.ones(adj_num + 1).cuda()
-        A[0, :adj_num + 1] = tmp
-        A[:adj_num + 1, 0] = tmp
+        tmp = torch.ones(max_context_num + 1).cuda()
+        A[0, :max_context_num + 1] = tmp
+        A[:max_context_num + 1, 0] = tmp
 
         D = np.eye(max_context_num + 1, max_context_num + 1)
-        D[0][0] = max_context_num
+        i = list(range(max_context_num + 1))
+        D[i, i] = 2
+        D[0][0] = max_context_num + 1
 
         if relation in relation_adj_table:
             neighbours_set = relation_adj_table[relation]
@@ -218,18 +232,12 @@ def construct_adj_table(train_list):
         relation_DAD[relation] = D.mm(A).mm(D)
 
     for k, v in entity_adj_table.items():
-        if max_context_num_constraint:
-            res = list(v)
-            if len(res) > max_context_num:
-                res = res[:max_context_num]
-        else:
-            res = list(v)
+        res = list(v)
         entity_adj_table[k] = res + [entity_total] * (max_context_num - len(res))  # 补padding
+
     for k, v in relation_adj_table.items():
         res = []
         for i in v:
-            if len(res) == 2 * max_context_num:
-                break
             if len(i) == 1:
                 res.extend(list(i))
                 res.append(relation_total)
@@ -239,6 +247,10 @@ def construct_adj_table(train_list):
         relation_adj_table[k] = res + [relation_total] * 2 * (max_context_num - len(res) // 2)  # 补padding
 
     return entity_adj_table, relation_adj_table, max_context_num, entity_DAD, relation_DAD
+
+
+entity_adj_table, relation_adj_table, max_context_num, entity_A, relation_A = construct_adj_table(train_list)
+# entity_adj_table, relation_adj_table, max_context_num, entity_A, relation_A = dict(), dict(), 0, dict(), dict()
 
 
 def bern_sampling_prepare(train_list):
@@ -327,32 +339,6 @@ def prepare_data():
         nhs).cuda(), torch.IntTensor(nrs).cuda(), torch.IntTensor(nts).cuda()
 
 
-entity_adj_table, relation_adj_table, max_context_num, entity_A, relation_A = construct_adj_table(train_list)
-train_times = 1001
-validation_step = 40
-norm = args.norm
-learning_rate = args.learning_rate
-batch_size = args.batchsize
-nbatchs = math.ceil(len(train_list) / batch_size)  # 单例输入，等于训练数据的数目
-dim = args.dimension
-margin = args.margin
-extra_info = args.extra
-bern = True
-init_with_transe = False
-transe_model_file = 'TransE2.json'
-res_dir = "./res2/%s_%s_%s_%s_%s_%s/" % (str(norm), str(batch_size), str(margin), str(dim), str(learning_rate), extra_info)
-
-print('train_times: ' + str(train_times))
-print('validation_step: ' + str(validation_step))
-print('learning_rate: ' + str(learning_rate))
-print('batch_size: ' + str(batch_size))
-print('nbatchs: ' + str(nbatchs))
-print('dim: ' + str(dim))
-print('margin: ' + str(margin))
-print('bern: ' + str(bern))
-print('init_with_transe: ' + str(init_with_transe))
-
-
 def get_batch(batch, epoch, phs, prs, pts, nhs, nrs, nts):
     r = min((batch + 1) * batch_size, len(train_list))
 
@@ -360,53 +346,9 @@ def get_batch(batch, epoch, phs, prs, pts, nhs, nrs, nts):
            (nhs[epoch, batch * batch_size: r], nrs[epoch, batch * batch_size: r], nts[epoch, batch * batch_size: r])
 
 
-def get_batch_positive_A(golden_triples):
-    # multi golden and multi negative
-    pos_h, pos_r, pos_t = golden_triples
-
-    return entity_A[pos_h.cpu().numpy()], relation_A[pos_r.cpu().numpy()], entity_A[pos_t.cpu().numpy()]
-
-
-def get_batch_negative_A(negative_triples):
-    # multi golden and multi negative
-    neg_h, neg_r, neg_t = negative_triples
-
-    return entity_A[neg_h.cpu().numpy()], relation_A[neg_r.cpu().numpy()], entity_A[neg_t.cpu().numpy()]
-
-
-def load_parameter(file_name, model='our', mode='input'):
-    with open('./res/' + file_name, "r") as f:
-        emb = json.loads(f.read())
-
-    if model == 'transe':
-        if mode == 'input':
-            ent_embeddings = emb['ent_embeddings.weight']
-            rel_embeddings = emb['rel_embeddings.weight']
-            return torch.FloatTensor(ent_embeddings).cuda(), torch.FloatTensor(rel_embeddings).cuda()
-
-        entity_emb = emb['entity_emb']
-        relation_emb = emb['relation_emb']
-        # entity_emb = emb['ent_embeddings.weight']
-        # relation_emb = emb['rel_embeddings.weight']
-        return entity_emb, relation_emb
-
-    entity_emb = emb['entity_emb']
-    relation_emb = emb['relation_emb']
-    entity_context = emb['entity_context']
-    relation_context = emb['relation_context']
-    entity_gcn_weight = emb['entity_gcn_weight']
-    relation_gcn_weight = emb['relation_gcn_weight']
-    gate_entity = emb['gate_entity']
-    gate_relation = emb['gate_relation']
-    v_ent = emb['v_ent']
-    v_rel = emb['v_rel']
-
-    # give index, return embedding
-    return torch.FloatTensor(entity_emb).cuda(), torch.FloatTensor(relation_emb).cuda(), torch.FloatTensor(
-        entity_context).cuda(), torch.FloatTensor(relation_context).cuda(), torch.FloatTensor(
-        entity_gcn_weight).cuda(), torch.FloatTensor(relation_gcn_weight).cuda(), torch.FloatTensor(
-        gate_entity).cuda(), torch.FloatTensor(gate_relation).cuda(), torch.FloatTensor(v_ent).cuda(),torch.FloatTensor(
-        v_rel).cuda()
+def get_batch_A(triple):
+    h, r, t = triple
+    return entity_A[h.cpu().numpy()], relation_A[r.cpu().numpy()], entity_A[t.cpu().numpy()]
 
 
 def get_head_batch(golden_triple):
@@ -418,17 +360,51 @@ def get_head_batch(golden_triple):
 
 
 def get_tail_batch(golden_triple):
-    tail_batch = torch.zeros(entity_total, 3, dtype=torch.int32)
-    tail_batch[:, 0] = torch.tensor([golden_triple[0]] * entity_total)
-    tail_batch[:, 1] = torch.tensor([golden_triple[1]] * entity_total)
-    tail_batch[:, 2] = torch.tensor(list(range(entity_total)))
+    tail_batch = np.zeros((entity_total, 3), dtype=np.int32)
+    tail_batch[:, 0] = np.array([golden_triple[0]] * entity_total)
+    tail_batch[:, 1] = np.array([golden_triple[1]] * entity_total)
+    tail_batch[:, 2] = np.array(list(range(entity_total)))
     return tail_batch
 
 
-def get_transe_embdding():
+def load_o_emb(epoch, input=False):
+    if input:
+        with open('./res/entity_parameters%s.json' % str(epoch), "r") as f:
+            emb = json.loads(f.read())
+            entity_emb = torch.DoubleTensor(len(emb), dim)
+            for k, v in emb.items():
+                entity_emb[int(k)] = torch.DoubleTensor(v)
+
+        with open('./res/relation_parameters%s.json' % str(epoch), "r") as f:
+            emb = json.loads(f.read())
+            relation_emb = torch.DoubleTensor(len(emb), dim)
+            for k, v in emb.items():
+                relation_emb[int(k)] = torch.DoubleTensor(v)
+        return entity_emb.cuda(), relation_emb.cuda()
+
+    else:
+        with open(res_dir + 'entity_o_parameters' + str(epoch), "r") as f:
+            entity_emb = json.loads(f.read())
+        with open(res_dir + 'relation_o_parameters' + str(epoch), "r") as f:
+            relation_emb = json.loads(f.read())
+        return torch.DoubleTensor(entity_emb).cuda(), torch.DoubleTensor(relation_emb).cuda()
+
+
+def load_parameters(epoch):
+    with open(res_dir + 'all_parameters' + str(epoch), 'r') as f:
+        emb = json.loads(f.read())
+        entity_emb = emb['entity_emb']
+        relation_emb = emb['relation_emb']
+
+        return entity_emb, relation_emb
+
+
+def get_transe_embdding(input=True):
     with open('./res/' + transe_model_file, "r") as f:
         emb = json.loads(f.read())
-
         entity_emb = emb['ent_embeddings.weight']
         relation_emb = emb['rel_embeddings.weight']
-        return torch.FloatTensor(entity_emb).cuda(), torch.FloatTensor(relation_emb).cuda()
+        if input:
+            return torch.DoubleTensor(entity_emb).cuda(), torch.DoubleTensor(relation_emb).cuda()
+        else:
+            return entity_emb, relation_emb
