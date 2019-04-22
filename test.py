@@ -168,7 +168,7 @@ def test_link_prediction(test_list):
 
 
 train_set = set(config.train_list)
-entity_emb, relation_emb = config.load_o_emb(120, input=True)
+entity_emb, relation_emb = config.load_o_emb(460, input=False)
 print('test link prediction starting...')
 test_link_prediction(config.test_list)
 print('test link prediction ending...')
